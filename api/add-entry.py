@@ -1,6 +1,6 @@
 import json
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -9,18 +9,14 @@ app = FastAPI()
 
 SHEET_ID = "1v4TyRW0mS-EWnjrGbR49UtNK7Jp5X0ycB9pXVtVMAu0"
 
-# Service Account aus Umgebungsvariable laden
+# Service Account laden
 SERVICE_ACCOUNT_ENV = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
 if not SERVICE_ACCOUNT_ENV:
     raise Exception("Environment variable GOOGLE_SERVICE_ACCOUNT is missing.")
-
 SERVICE_ACCOUNT_INFO = json.loads(SERVICE_ACCOUNT_ENV)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
-# -----------------------------
-# Hilfsfunktion: Sheets-Client
-# -----------------------------
 def make_sheet_client():
     creds = service_account.Credentials.from_service_account_info(
         SERVICE_ACCOUNT_INFO,
@@ -30,7 +26,7 @@ def make_sheet_client():
 
 
 # -----------------------------
-# Datenmodell für /add-entry
+# POST /add-entry
 # -----------------------------
 class Entry(BaseModel):
     date: str
@@ -41,9 +37,6 @@ class Entry(BaseModel):
     anmerkung: str | None = ""
 
 
-# -----------------------------
-# Strafen aus Google Sheet holen
-# -----------------------------
 def load_strafen():
     service = make_sheet_client()
     sheet = service.spreadsheets()
@@ -56,81 +49,43 @@ def load_strafen():
     values = result.get("values", [])
     strafen = {}
 
-    # Überspring Header
     for row in values[1:]:
         if len(row) >= 2:
             key = row[0].strip()
             value = row[1].strip()
             strafen[key] = value
-
     return strafen
 
 
 @app.post("/add-entry")
 def add_entry(entry: Entry):
-    # 1) Strafen laden
     strafen = load_strafen()
 
-    # ------------------------------------------------------------
-    # 2) Kosten bestimmen (Variante 1 – D immer Auto-Mapping)
-    # ------------------------------------------------------------
-    kosten = ""           # Spalte D (automatisch)
-    kosten_manuell = ""   # Spalte E (manuell)
-    kosten_final = ""     # Spalte F
-
-    # ---------- A) AUTOMATISCHE STRAFE (SPALTE D) ----------
-    if entry.vergehen in strafen:
-        mapped_value = strafen[entry.vergehen].strip()
-
-        # Geldwert erkennen (z. B. "3,00 €")
-        if "€" in mapped_value or "," in mapped_value:
-            kosten = mapped_value
-
-        # Text wie "Kiste"
-        elif "kiste" in mapped_value.lower():
-            kosten = ""             # D bleibt leer
-            kosten_final = "Kiste"  # Default für später
-
-        else:
-            # sonstige Texte
-            kosten = ""
-            kosten_final = mapped_value
-    else:
-        kosten = ""
-
-
-    # ---------- B) MANUELLE ANGABEN (SPALTE E) ----------
+    # Kostenlogik
     if entry.kosten_manuell:
         man = entry.kosten_manuell.strip()
-
-        # Normalisiere alle Kisten-Schreibweisen
-        if "kiste" in man.lower():
-            kosten_manuell = "Kiste"
-        else:
-            kosten_manuell = man
-
-
-    # ---------- C) FINALWERT F BERECHNEN ----------
-    if kosten_manuell:
-        # Manuell sticht automatisch
-        kosten_final = kosten_manuell
+        kosten_final = "Kiste" if "kiste" in man.lower() else man
     else:
-        # Manuell nicht gesetzt → Auto-Wert
-        if kosten_final == "" and kosten != "":
-            kosten_final = kosten
-
-        # Falls weder auto noch manuell → 0 €
+        kosten_final = ""
+        if entry.vergehen in strafen:
+            value = strafen[entry.vergehen].strip()
+            if "kiste" in value.lower():
+                kosten_final = "Kiste"
+            elif "€" in value or "," in value:
+                kosten_final = value
+            else:
+                kosten_final = value
+        elif entry.kosten:
+            kosten_final = "Kiste" if "kiste" in entry.kosten.lower() else entry.kosten
         if kosten_final == "":
             kosten_final = "0,00 €"
 
-
-    # ---------- D) ZEILE SCHREIBEN ----------
     values = [[
         entry.date,
         entry.name,
         entry.vergehen,
-        kosten,
-        kosten_manuell,
+        entry.kosten or "",
+        entry.kosten_manuell or "",
         kosten_final,
         entry.anmerkung or ""
     ]]
@@ -147,10 +102,8 @@ def add_entry(entry: Entry):
 
     return {
         "status": "ok",
-        "written": values,
-        "kosten": kosten,
-        "kosten_manuell": kosten_manuell,
-        "kosten_final": kosten_final
+        "kosten_final": kosten_final,
+        "appended": values
     }
 
 
@@ -176,6 +129,58 @@ def get_spieler():
     ).execute()
 
     values = result.get("values", [])
-    spieler = [row[0] for row in values[1:] if row]
+    return [row[0] for row in values[1:] if row]
 
-    return spieler
+
+# -----------------------------
+# GET /get-eintraege
+# -----------------------------
+@app.get("/get-eintraege")
+def get_eintraege(name: str = Query(...)):
+    service = make_sheet_client()
+    sheets = service.spreadsheets()
+
+    result = sheets.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Einträge!A:G"
+    ).execute()
+
+    rows = result.get("values", [])
+    header = rows[0]
+    entries = []
+
+    for row in rows[1:]:
+        row_dict = {header[i]: row[i] if i < len(row) else "" for i in range(len(header))}
+        if row_dict.get("Name", "").lower() == name.lower():
+            entries.append(row_dict)
+
+    return {"eintraege": entries}
+
+
+# -----------------------------
+# GET /get-saldo
+# -----------------------------
+@app.get("/get-saldo")
+def get_saldo(name: str):
+
+    service = make_sheet_client()
+    sheets = service.spreadsheets()
+
+    result = sheets.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Einträge!A:G"
+    ).execute()
+
+    rows = result.get("values", [])
+
+    saldo = 0.0
+
+    for row in rows[1:]:
+        if row[1].strip().lower() == name.strip().lower():
+            final = row[5].replace("€", "").replace(",", ".").strip()
+            try:
+                saldo += float(final)
+            except:
+                pass
+
+    return {"name": name, "saldo": saldo}
