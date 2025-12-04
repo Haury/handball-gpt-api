@@ -161,26 +161,54 @@ def get_eintraege(name: str = Query(...)):
 # GET /get-saldo
 # -----------------------------
 @app.get("/get-saldo")
-def get_saldo(name: str):
-
+def get_saldo(name: str = Query(...)):
+    # Sheets laden
     service = make_sheet_client()
-    sheets = service.spreadsheets()
+    sheet = service.spreadsheets()
 
-    result = sheets.values().get(
+    result = sheet.values().get(
         spreadsheetId=SHEET_ID,
         range="Einträge!A:G"
     ).execute()
 
     rows = result.get("values", [])
 
-    saldo = 0.0
+    header = rows[0]
+    geld_saldo = 0.0
+    kisten_plus = 0      # Kisten, die jemand gebracht hat
+    kisten_minus = 0     # Kisten, die als Strafe zählen
 
     for row in rows[1:]:
-        if row[1].strip().lower() == name.strip().lower():
-            final = row[5].replace("€", "").replace(",", ".").strip()
+        row_dict = {header[i]: row[i] if i < len(row) else "" for i in range(len(header))}
+
+        if row_dict.get("Name", "").strip().lower() != name.strip().lower():
+            continue
+
+        kosten = row_dict.get("Kosten Final", "").strip()
+
+        # Fall 1: Kosten ist eine Kiste
+        if kosten.lower() == "kiste":
+            # Wenn das Vergehen "Bezahlt" ist → Kiste gebracht → positiv
+            if row_dict.get("Vergehen", "").lower() == "bezahlt":
+                kisten_plus += 1
+            else:
+                kisten_minus += 1
+            continue
+
+        # Fall 2: echter Geldwert
+        if "€" in kosten:
+            wert = kosten.replace("€", "").replace(",", ".").strip()
             try:
-                saldo += float(final)
+                geld_saldo += float(wert)
             except:
                 pass
 
-    return {"name": name, "saldo": saldo}
+    # Kisten-Saldo berechnen
+    kisten_saldo = kisten_minus - kisten_plus
+
+    return {
+        "geld_saldo": geld_saldo,
+        "kisten_saldo": kisten_saldo,
+        "kisten_plus": kisten_plus,
+        "kisten_minus": kisten_minus
+    }
