@@ -59,9 +59,14 @@ def load_strafen():
 
 @app.post("/add-entry")
 def add_entry(entry: Entry):
+    # -------------------------
+    # 1) Strafen laden
+    # -------------------------
     strafen = load_strafen()
 
-    # Kostenlogik
+    # -------------------------
+    # 2) Kosten bestimmen
+    # -------------------------
     if entry.kosten_manuell:
         man = entry.kosten_manuell.strip()
         kosten_final = "Kiste" if "kiste" in man.lower() else man
@@ -69,27 +74,65 @@ def add_entry(entry: Entry):
         kosten_final = ""
         if entry.vergehen in strafen:
             value = strafen[entry.vergehen].strip()
+
             if "kiste" in value.lower():
                 kosten_final = "Kiste"
             elif "€" in value or "," in value:
                 kosten_final = value
             else:
                 kosten_final = value
+
         elif entry.kosten:
             kosten_final = "Kiste" if "kiste" in entry.kosten.lower() else entry.kosten
+
         if kosten_final == "":
             kosten_final = "0,00 €"
 
-    values = [[
-        entry.date,
-        entry.name,
-        entry.vergehen,
-        entry.kosten or "",
-        entry.kosten_manuell or "",
-        kosten_final,
-        entry.anmerkung or ""
-    ]]
+    # ---------------------------------------------------------
+    # 3) Zusatzlogik: Anzahl Kisten aus Text extrahieren
+    # ---------------------------------------------------------
+    def extract_kisten_count(text: str) -> int:
+        """
+        Extrahiert Mengenangaben wie:
+        '2 Kisten', 'Kiste x3', '3x Kiste', 'Kiste 3'
+        """
+        if not text:
+            return 1
 
+        text = text.lower().replace(",", " ").replace(".", " ")
+
+        import re
+        match = re.search(r"(\d+)", text)
+
+        if match:
+            return max(1, int(match.group(1)))
+
+        return 1
+
+    # Anzahl bestimmen, Standard = 1
+    kisten_count = 1
+    if "kiste" in kosten_final.lower():
+        kisten_count = extract_kisten_count(entry.kosten_manuell or entry.kosten)
+
+    # ---------------------------------------------------------
+    # 4) Werte generieren (bei Kisten mehrere Zeilen!)
+    # ---------------------------------------------------------
+    values = []
+
+    for _ in range(kisten_count):
+        values.append([
+            entry.date,
+            entry.name,
+            entry.vergehen,
+            entry.kosten or "",
+            entry.kosten_manuell or "",
+            "Kiste" if "kiste" in kosten_final.lower() else kosten_final,
+            entry.anmerkung or ""
+        ])
+
+    # -------------------------
+    # 5) In Sheets schreiben
+    # -------------------------
     service = make_sheet_client()
     sheets = service.spreadsheets()
 
@@ -102,6 +145,7 @@ def add_entry(entry: Entry):
 
     return {
         "status": "ok",
+        "rows_added": len(values),
         "kosten_final": kosten_final,
         "appended": values
     }
