@@ -1,3 +1,5 @@
+import json
+import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 from google.oauth2 import service_account
@@ -5,8 +7,17 @@ from googleapiclient.discovery import build
 
 app = FastAPI()
 
+# Google Sheet ID deines Strafenkatalogs
 SHEET_ID = "1v4TyRW0mS-EWnjrGbR49UtNK7Jp5X0ycB9pXVtVMAu0"
-SERVICE_ACCOUNT_FILE = "service_account.json"
+
+# Environment Variable enthält den kompletten JSON-Key
+SERVICE_ACCOUNT_ENV = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
+
+if not SERVICE_ACCOUNT_ENV:
+    raise Exception("Environment variable GOOGLE_SERVICE_ACCOUNT is missing.")
+
+SERVICE_ACCOUNT_INFO = json.loads(SERVICE_ACCOUNT_ENV)
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 class Entry(BaseModel):
@@ -18,10 +29,12 @@ class Entry(BaseModel):
     anmerkung: str | None = ""
 
 def make_sheet_client():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
+    creds = service_account.Credentials.from_service_account_info(
+        SERVICE_ACCOUNT_INFO,
+        scopes=SCOPES
     )
-    return build("sheets", "v4", credentials=creds)
+    service = build("sheets", "v4", credentials=creds)
+    return service
 
 @app.post("/add-entry")
 def add_entry(entry: Entry):
@@ -36,9 +49,9 @@ def add_entry(entry: Entry):
     ]]
 
     service = make_sheet_client()
-    sheet = service.spreadsheets()
+    sheets = service.spreadsheets()
 
-    sheet.values().append(
+    sheets.values().append(
         spreadsheetId=SHEET_ID,
         range="Einträge!A:G",
         valueInputOption="USER_ENTERED",
