@@ -4,6 +4,8 @@ from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from datetime import datetime
+
 
 app = FastAPI()
 
@@ -265,3 +267,122 @@ def get_saldo(name: str = Query(...)):
         "kisten_minus": kisten_minus,
         "kisten_plus": kisten_plus
     }
+    
+@app.get("/essen-am-wochentag")
+def essen_am_wochentag(tag: str):
+    """
+    Liefert den nächsten Termin (ab heute) für einen bestimmten Wochentag,
+    z.B. /essen-am-wochentag?tag=donnerstag
+    """
+    service = make_sheet_client()
+    sheet = service.spreadsheets()
+
+    result = sheet.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Esse!A:B"
+    ).execute()
+
+    rows = result.get("values", [])[1:]  # ohne Header
+
+    # gewünschten Wochentag normalisieren (z.B. "donnerstag")
+    tag = tag.strip().lower()
+
+    # map deutsche wochentage → Python weekday()
+    wochentage = {
+        "montag": 0,
+        "dienstag": 1,
+        "mittwoch": 2,
+        "donnerstag": 3,
+        "freitag": 4,
+        "samstag": 5,
+        "sonntag": 6
+    }
+
+    if tag not in wochentage:
+        return {"error": f"Unbekannter Wochentag: {tag}"}
+
+    gesuchter_index = wochentage[tag]
+    heute = datetime.today()
+
+    kandidaten = []
+
+    for row in rows:
+        if len(row) < 2:
+            continue
+
+        name = row[0].strip()
+        datum_str = row[1].strip()
+
+        try:
+            datum = datetime.strptime(datum_str, "%d.%m.%Y")
+        except:
+            continue
+
+        # nur zukünftige Termine berücksichtigen
+        if datum.date() >= heute.date():
+            if datum.weekday() == gesuchter_index:
+                kandidaten.append((datum, name))
+
+    if not kandidaten:
+        return {"name": None, "datum": None}
+
+    # nächstes Datum = frühestes Datum
+    kandidaten.sort(key=lambda x: x[0])
+    datum, name = kandidaten[0]
+
+    return {
+        "name": name,
+        "datum": datum.strftime("%d.%m.%Y"),
+        "wochentag": tag
+    }
+
+@app.get("/essen-fuer-spieler")
+def essen_fuer_spieler(name: str):
+    """
+    Liefert den nächsten Essens-Termin für den angegebenen Spieler.
+    Beispiel: /essen-fuer-spieler?name=Luis%20Schreiner
+    """
+    service = make_sheet_client()
+    sheet = service.spreadsheets()
+
+    result = sheet.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Esse!A:B"
+    ).execute()
+
+    rows = result.get("values", [])[1:]  # ohne Header
+
+    name_requested = name.strip().lower()
+    heute = datetime.today()
+
+    termine = []
+
+    for row in rows:
+        if len(row) < 2:
+            continue
+
+        name_sheet = row[0].strip().lower()
+        datum_str = row[1].strip()
+
+        if name_sheet != name_requested:
+            continue
+
+        try:
+            datum = datetime.strptime(datum_str, "%d.%m.%Y")
+        except:
+            continue
+
+        if datum.date() >= heute.date():
+            termine.append(datum)
+
+    if not termine:
+        return {"name": name, "datum": None}
+
+    termine.sort()
+    naechster = termine[0]
+
+    return {
+        "name": name,
+        "datum": naechster.strftime("%d.%m.%Y")
+    }
+
