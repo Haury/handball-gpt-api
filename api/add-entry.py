@@ -87,16 +87,22 @@ def add_entry(entry: Entry):
     # b) Falls manuell leer → Kosten aus Strafenliste holen, wenn möglich
     else:
         kosten_final = ""
-
-        # Lookup: Vergehen aus Liste?
+    
         if entry.vergehen in strafen:
-            kosten_final = strafen[entry.vergehen]
-
-        # Falls GPT schon kosten geliefert hat: verwenden
+            value = strafen[entry.vergehen].strip()
+    
+            # Prüfen ob es ein Geldwert ist (enthält € oder Komma)
+            if "€" in value or "," in value or value.replace('.', '', 1).isdigit():
+                kosten_final = value
+            else:
+                # Kein Geldwert: Text wie "Kiste" exakt übernehmen
+                kosten_final = value
+    
+        # Falls GPT schon kosten geliefert hat
         elif entry.kosten:
             kosten_final = entry.kosten
-
-        # Falls alles leer ist: 0 €
+    
+        # Falls alles leer: 0€
         if kosten_final == "":
             kosten_final = "0,00 €"
 
