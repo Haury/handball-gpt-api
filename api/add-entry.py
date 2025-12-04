@@ -57,3 +57,41 @@ def add_entry(entry: Entry):
     ).execute()
 
     return {"status": "ok", "appended": values}
+
+@app.get("/get-strafen")
+def get_strafen():
+    service = make_sheet_client()
+    sheet = service.spreadsheets()
+
+    # Annahme: Strafen stehen in "Strafen!A:B"
+    result = sheet.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Strafen!A:B"
+    ).execute()
+
+    values = result.get("values", [])
+
+    # Umwandeln in Dictionary: {"Pauschale": "3,00 €", ...}
+    strafen = {}
+    for row in values[1:]:  # Zeile 0 sind Header
+        if len(row) >= 2:
+            key = row[0].strip()
+            value = row[1].strip()
+            strafen[key] = value
+
+    return strafen
+
+@app.get("/get-spieler")
+def get_spieler():
+    service = make_sheet_client()
+    sheet = service.spreadsheets()
+
+    result = sheet.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Spielerliste!A:A"   # Annahme: Namen stehen in Spalte A
+    ).execute()
+
+    values = result.get("values", [])
+    spieler = [row[0] for row in values[1:] if row]  # erste Zeile = Header
+
+    return spieler
