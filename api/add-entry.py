@@ -7,12 +7,9 @@ from googleapiclient.discovery import build
 
 app = FastAPI()
 
-# Google Sheet ID deines Strafenkatalogs
 SHEET_ID = "1v4TyRW0mS-EWnjrGbR49UtNK7Jp5X0ycB9pXVtVMAu0"
 
-# Environment Variable enthält den kompletten JSON-Key
 SERVICE_ACCOUNT_ENV = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
-
 if not SERVICE_ACCOUNT_ENV:
     raise Exception("Environment variable GOOGLE_SERVICE_ACCOUNT is missing.")
 
@@ -33,7 +30,8 @@ def make_sheet_client():
         SERVICE_ACCOUNT_INFO,
         scopes=SCOPES
     )
-    service = build("sheets", "v4", credentials=creds)
+    # FIX: Disable cache
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
     return service
 
 @app.post("/add-entry")
