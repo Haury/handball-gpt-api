@@ -77,34 +77,48 @@ def add_entry(entry: Entry):
     strafen = load_strafen()
 
     # -------------------------
-    # 2) Kosten bestimmen
-    # -------------------------
+# 2) Kosten bestimmen
+# -------------------------
 
-    # a) Kostenmanuell wird immer bevorzugt
-    if entry.kosten_manuell:
-        kosten_final = entry.kosten_manuell.strip()
+# a) Kostenmanuell wird immer bevorzugt
+if entry.kosten_manuell:
+    man = entry.kosten_manuell.strip()
 
-    # b) Falls manuell leer → Kosten aus Strafenliste holen, wenn möglich
+    # Wenn "Kiste" enthalten: immer sauber "Kiste" schreiben
+    if "kiste" in man.lower():
+        kosten_final = "Kiste"
     else:
-        kosten_final = ""
-    
-        if entry.vergehen in strafen:
-            value = strafen[entry.vergehen].strip()
-    
-            # Prüfen ob es ein Geldwert ist (enthält € oder Komma)
-            if "€" in value or "," in value or value.replace('.', '', 1).isdigit():
-                kosten_final = value
-            else:
-                # Kein Geldwert: Text wie "Kiste" exakt übernehmen
-                kosten_final = value
-    
-        # Falls GPT schon kosten geliefert hat
-        elif entry.kosten:
+        kosten_final = man
+
+# b) Falls manuell leer → Kosten aus Strafenliste holen, wenn möglich
+else:
+    kosten_final = ""
+
+    if entry.vergehen in strafen:
+        value = strafen[entry.vergehen].strip()
+
+        # Wenn Kiste im Strafen-Lookup steht → als Kiste übernehmen
+        if "kiste" in value.lower():
+            kosten_final = "Kiste"
+
+        # Wenn es ein Geldwert ist
+        elif "€" in value or "," in value or value.replace('.', '', 1).isdigit():
+            kosten_final = value
+
+        # Falls sonstiger Text → direkt übernehmen
+        else:
+            kosten_final = value
+
+    # Falls GPT schon kosten geliefert hat
+    elif entry.kosten:
+        if "kiste" in entry.kosten.lower():
+            kosten_final = "Kiste"
+        else:
             kosten_final = entry.kosten
-    
-        # Falls alles leer: 0€
-        if kosten_final == "":
-            kosten_final = "0,00 €"
+
+    # Falls alles leer: 0€
+    if kosten_final == "":
+        kosten_final = "0,00 €"
 
     # -------------------------
     # 3) Daten schreiben
