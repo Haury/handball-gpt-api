@@ -9,14 +9,29 @@ app = FastAPI()
 
 SHEET_ID = "1v4TyRW0mS-EWnjrGbR49UtNK7Jp5X0ycB9pXVtVMAu0"
 
+# Service Account aus Umgebungsvariable laden
 SERVICE_ACCOUNT_ENV = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
 if not SERVICE_ACCOUNT_ENV:
     raise Exception("Environment variable GOOGLE_SERVICE_ACCOUNT is missing.")
 
 SERVICE_ACCOUNT_INFO = json.loads(SERVICE_ACCOUNT_ENV)
-
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+
+# -----------------------------
+# Hilfsfunktion: Sheets-Client
+# -----------------------------
+def make_sheet_client():
+    creds = service_account.Credentials.from_service_account_info(
+        SERVICE_ACCOUNT_INFO,
+        scopes=SCOPES
+    )
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+# -----------------------------
+# Datenmodell für /add-entry
+# -----------------------------
 class Entry(BaseModel):
     date: str
     name: str
@@ -25,24 +40,76 @@ class Entry(BaseModel):
     kosten_manuell: str | None = ""
     anmerkung: str | None = ""
 
-def make_sheet_client():
-    creds = service_account.Credentials.from_service_account_info(
-        SERVICE_ACCOUNT_INFO,
-        scopes=SCOPES
-    )
-    # FIX: Disable cache
-    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    return service
 
+# -----------------------------
+# Strafen aus Google Sheet holen
+# -----------------------------
+def load_strafen():
+    service = make_sheet_client()
+    sheet = service.spreadsheets()
+
+    result = sheet.values().get(
+        spreadsheetId=SHEET_ID,
+        range="Strafen!A:B"
+    ).execute()
+
+    values = result.get("values", [])
+    strafen = {}
+
+    # Überspring Header
+    for row in values[1:]:
+        if len(row) >= 2:
+            key = row[0].strip()
+            value = row[1].strip()
+            strafen[key] = value
+
+    return strafen
+
+
+# -----------------------------
+# POST /add-entry
+# -----------------------------
 @app.post("/add-entry")
 def add_entry(entry: Entry):
+    # -------------------------
+    # 1) Strafen laden
+    # -------------------------
+    strafen = load_strafen()
+
+    # -------------------------
+    # 2) Kosten bestimmen
+    # -------------------------
+
+    # a) Kostenmanuell wird immer bevorzugt
+    if entry.kosten_manuell:
+        kosten_final = entry.kosten_manuell.strip()
+
+    # b) Falls manuell leer → Kosten aus Strafenliste holen, wenn möglich
+    else:
+        kosten_final = ""
+
+        # Lookup: Vergehen aus Liste?
+        if entry.vergehen in strafen:
+            kosten_final = strafen[entry.vergehen]
+
+        # Falls GPT schon kosten geliefert hat: verwenden
+        elif entry.kosten:
+            kosten_final = entry.kosten
+
+        # Falls alles leer ist: 0 €
+        if kosten_final == "":
+            kosten_final = "0,00 €"
+
+    # -------------------------
+    # 3) Daten schreiben
+    # -------------------------
     values = [[
         entry.date,
         entry.name,
         entry.vergehen,
         entry.kosten or "",
         entry.kosten_manuell or "",
-        "",
+        kosten_final,
         entry.anmerkung or ""
     ]]
 
@@ -56,31 +123,24 @@ def add_entry(entry: Entry):
         body={"values": values}
     ).execute()
 
-    return {"status": "ok", "appended": values}
+    return {
+        "status": "ok",
+        "appended": values,
+        "kosten_final": kosten_final
+    }
 
+
+# -----------------------------
+# GET /get-strafen
+# -----------------------------
 @app.get("/get-strafen")
 def get_strafen():
-    service = make_sheet_client()
-    sheet = service.spreadsheets()
+    return load_strafen()
 
-    # Annahme: Strafen stehen in "Strafen!A:B"
-    result = sheet.values().get(
-        spreadsheetId=SHEET_ID,
-        range="Strafen!A:B"
-    ).execute()
 
-    values = result.get("values", [])
-
-    # Umwandeln in Dictionary: {"Pauschale": "3,00 €", ...}
-    strafen = {}
-    for row in values[1:]:  # Zeile 0 sind Header
-        if len(row) >= 2:
-            key = row[0].strip()
-            value = row[1].strip()
-            strafen[key] = value
-
-    return strafen
-
+# -----------------------------
+# GET /get-spieler
+# -----------------------------
 @app.get("/get-spieler")
 def get_spieler():
     service = make_sheet_client()
@@ -88,10 +148,10 @@ def get_spieler():
 
     result = sheet.values().get(
         spreadsheetId=SHEET_ID,
-        range="Spielerliste!A:A"   # Annahme: Namen stehen in Spalte A
+        range="Spielerliste!A:A"
     ).execute()
 
     values = result.get("values", [])
-    spieler = [row[0] for row in values[1:] if row]  # erste Zeile = Header
+    spieler = [row[0] for row in values[1:] if row]
 
     return spieler
