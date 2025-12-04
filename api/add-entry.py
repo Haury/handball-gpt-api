@@ -68,64 +68,69 @@ def load_strafen():
 
 @app.post("/add-entry")
 def add_entry(entry: Entry):
-    # -------------------------
     # 1) Strafen laden
-    # -------------------------
     strafen = load_strafen()
 
-    # -------------------------
-    # 2) Kosten bestimmen
-    # -------------------------
+    # ------------------------------------------------------------
+    # 2) Kosten bestimmen (Variante 1 – D immer Auto-Mapping)
+    # ------------------------------------------------------------
+    kosten = ""           # Spalte D (automatisch)
+    kosten_manuell = ""   # Spalte E (manuell)
+    kosten_final = ""     # Spalte F
 
-    # a) Kostenmanuell wird immer bevorzugt
+    # ---------- A) AUTOMATISCHE STRAFE (SPALTE D) ----------
+    if entry.vergehen in strafen:
+        mapped_value = strafen[entry.vergehen].strip()
+
+        # Geldwert erkennen (z. B. "3,00 €")
+        if "€" in mapped_value or "," in mapped_value:
+            kosten = mapped_value
+
+        # Text wie "Kiste"
+        elif "kiste" in mapped_value.lower():
+            kosten = ""             # D bleibt leer
+            kosten_final = "Kiste"  # Default für später
+
+        else:
+            # sonstige Texte
+            kosten = ""
+            kosten_final = mapped_value
+    else:
+        kosten = ""
+
+
+    # ---------- B) MANUELLE ANGABEN (SPALTE E) ----------
     if entry.kosten_manuell:
         man = entry.kosten_manuell.strip()
 
-        # Wenn "Kiste" enthalten: immer sauber "Kiste" schreiben
+        # Normalisiere alle Kisten-Schreibweisen
         if "kiste" in man.lower():
-            kosten_final = "Kiste"
+            kosten_manuell = "Kiste"
         else:
-            kosten_final = man
+            kosten_manuell = man
 
-    # b) Falls manuell leer → Kosten aus Strafenliste holen, wenn möglich
+
+    # ---------- C) FINALWERT F BERECHNEN ----------
+    if kosten_manuell:
+        # Manuell sticht automatisch
+        kosten_final = kosten_manuell
     else:
-        kosten_final = ""
+        # Manuell nicht gesetzt → Auto-Wert
+        if kosten_final == "" and kosten != "":
+            kosten_final = kosten
 
-        if entry.vergehen in strafen:
-            value = strafen[entry.vergehen].strip()
-
-            # Wenn Kiste im Strafen-Lookup steht → als Kiste übernehmen
-            if "kiste" in value.lower():
-                kosten_final = "Kiste"
-
-            # Wenn es ein Geldwert ist
-            elif "€" in value or "," in value or value.replace('.', '', 1).isdigit():
-                kosten_final = value
-
-            # Falls sonstiger Text → direkt übernehmen
-            else:
-                kosten_final = value
-
-        # Falls GPT schon kosten geliefert hat
-        elif entry.kosten:
-            if "kiste" in entry.kosten.lower():
-                kosten_final = "Kiste"
-            else:
-                kosten_final = entry.kosten
-
-        # Falls alles leer: 0€
+        # Falls weder auto noch manuell → 0 €
         if kosten_final == "":
             kosten_final = "0,00 €"
 
-    # -------------------------
-    # 3) Daten schreiben
-    # -------------------------
+
+    # ---------- D) ZEILE SCHREIBEN ----------
     values = [[
         entry.date,
         entry.name,
         entry.vergehen,
-        entry.kosten or "",
-        entry.kosten_manuell or "",
+        kosten,
+        kosten_manuell,
         kosten_final,
         entry.anmerkung or ""
     ]]
@@ -142,10 +147,11 @@ def add_entry(entry: Entry):
 
     return {
         "status": "ok",
-        "appended": values,
+        "written": values,
+        "kosten": kosten,
+        "kosten_manuell": kosten_manuell,
         "kosten_final": kosten_final
     }
-
 
 
 # -----------------------------
