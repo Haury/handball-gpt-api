@@ -114,7 +114,10 @@ def add_entry(entry: Entry):
         )
         return match[0] if match else user_input
 
-    vergehen_clean = match_vergehen(entry.vergehen)
+    if "kiste" in raw_text:
+        vergehen_clean = "Bezahlt"
+    else:
+        vergehen_clean = match_vergehen(entry.vergehen)
 
     # ---------------------------------------
     # 4. Kostenlogik pro Eintrag
