@@ -68,40 +68,46 @@ def add_entry(entry: Entry):
     strafen = load_strafen()
     strafen_keys = list(strafen.keys())
 
-    # ---------------------------------------
-    # 2. Kistenanzahl aus Rohtext extrahieren
-    # ---------------------------------------
     import re
-
     raw_text = (entry.vergehen + " " + (entry.kosten_manuell or "")).lower()
 
+    # ---------------------------------------
+    # 2. KORREKTE KISTENANZAHL EXTRAHIEREN
+    #    (nur wenn explizit Kisten erwähnt werden)
+    # ---------------------------------------
     def detect_kisten_count(text):
-        # numerisch
-        nums = re.findall(r"\b\d+\b", text)
-        if nums:
-            return int(nums[0])
+        # Nur Zahlen, die direkt vor "Kiste" stehen
+        match = re.search(r"(\d+)\s*(x)?\s*kiste", text)
+        if match:
+            return int(match.group(1))
 
-        # textuelle Varianten
+        # Textvarianten erkennen
         mapping = {
-            "zwei": 2,
-            "drei": 3,
-            "vier": 4,
-            "fünf": 5,
-            "sechs": 6
+            "zwei kiste": 2,
+            "zwei kisten": 2,
+            "drei kiste": 3,
+            "drei kisten": 3,
+            "vier kiste": 4,
+            "vier kisten": 4,
+            "fünf kiste": 5,
+            "fünf kisten": 5
         }
-        for word, val in mapping.items():
-            if word in text:
+        for key, val in mapping.items():
+            if key in text:
                 return val
 
+        # Standard: 1 Kiste
         return 1
 
-    kisten_count = detect_kisten_count(raw_text) if "kiste" in raw_text else 1
+    if "kiste" in raw_text:
+        kisten_count = detect_kisten_count(raw_text)
+    else:
+        kisten_count = 1
 
     # ---------------------------------------
     # 3. Vergehen fuzzy matchen
     # ---------------------------------------
     import difflib
-
     def match_vergehen(user_input):
         if not user_input:
             return user_input
@@ -110,21 +116,28 @@ def add_entry(entry: Entry):
             user_input,
             strafen_keys,
             n=1,
-            cutoff=0.5
+            cutoff=0.55
         )
         return match[0] if match else user_input
 
-    if "kiste" in raw_text:
+    # ---------------------------------------
+    # 4. Vergehen korrekt bestimmen
+    # ---------------------------------------
+
+    # Fall: Kisten werden gebracht oder bezahlt
+    if "kiste" in raw_text and ("bezahlt" in raw_text or "gebracht" in raw_text):
         vergehen_clean = "Bezahlt"
+
+    # Normale Strafe → fuzzy match
     else:
         vergehen_clean = match_vergehen(entry.vergehen)
 
     # ---------------------------------------
-    # 4. Kostenlogik pro Eintrag
+    # 5. Kostenlogik pro Eintrag
     # ---------------------------------------
     def calculate_single_entry():
 
-        # Kiste immer vorrangig
+        # Kiste als Kosten (aber nur nicht automatisch bezahlt!)
         if "kiste" in raw_text:
             return {
                 "kosten": "",
@@ -132,7 +145,7 @@ def add_entry(entry: Entry):
                 "kosten_final": "Kiste"
             }
 
-        # manueller Betrag
+        # Manueller Wert
         if entry.kosten_manuell:
             man = entry.kosten_manuell.strip()
             return {
@@ -141,16 +154,23 @@ def add_entry(entry: Entry):
                 "kosten_final": man
             }
 
-        # Mapping
+        # Mapping (Strafenliste)
         if vergehen_clean in strafen:
             value = strafen[vergehen_clean].strip()
+            # Textwert = Kiste, EURO oder normal
+            if value.lower() == "kiste":
+                return {
+                    "kosten": "",
+                    "kosten_manuell": "",
+                    "kosten_final": "Kiste"
+                }
             return {
                 "kosten": "",
                 "kosten_manuell": "" if ("€" in value or "," in value) else value,
                 "kosten_final": value
             }
 
-        # fallback
+        # Nichts erkannt → 0 Euro
         return {
             "kosten": "",
             "kosten_manuell": "",
@@ -158,7 +178,7 @@ def add_entry(entry: Entry):
         }
 
     # ---------------------------------------
-    # 5. Schleife: mehrere Einträge erzeugen
+    # 6. Schleife: mehrere Einträge (für mehrere Kisten)
     # ---------------------------------------
     all_rows = []
 
@@ -177,7 +197,7 @@ def add_entry(entry: Entry):
         all_rows.append(row)
 
     # ---------------------------------------
-    # 6. Schreiben in Google Sheet
+    # 7. Schreiben in Google Sheet
     # ---------------------------------------
     service = make_sheet_client()
     sheets = service.spreadsheets()
@@ -194,6 +214,7 @@ def add_entry(entry: Entry):
         "count": len(all_rows),
         "rows": all_rows
     }
+
 
 
 
