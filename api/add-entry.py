@@ -62,16 +62,16 @@ def load_strafen():
 @app.post("/add-entry")
 def add_entry(entry: Entry):
 
+    import re
+    import difflib
+
     # ---------------------------------------
     # 1. Strafenliste laden
     # ---------------------------------------
     strafen = load_strafen()
     strafen_keys = list(strafen.keys())
 
-    import re
-    import difflib
-
-    # gesamter Text zur Analyse (für Sprachkisten)
+    # gesamter Eingabetext für Sprach-Analysen
     raw_text = (
         (entry.vergehen or "") + " "
         + (entry.kosten_manuell or "") + " "
@@ -80,10 +80,10 @@ def add_entry(entry: Entry):
 
 
     # ---------------------------------------
-    # 2. Kistenzahl aus Sprachtext extrahieren
+    # 2. Kistenzahl aus Text extrahieren
     # ---------------------------------------
     def detect_kisten_count(text):
-        # numerisch
+        # numerisch wie "2 Kisten"
         nums = re.findall(r"\b\d+\b", text)
         if nums:
             return int(nums[0])
@@ -91,15 +91,9 @@ def add_entry(entry: Entry):
         # textuelle Varianten
         mapping = {
             "eine": 1, "eins": 1,
-            "zwei": 2,
-            "drei": 3,
-            "vier": 4,
-            "fünf": 5,
-            "sechs": 6,
-            "sieben": 7,
-            "acht": 8,
-            "neun": 9,
-            "zehn": 10,
+            "zwei": 2, "drei": 3, "vier": 4,
+            "fünf": 5, "sechs": 6, "sieben": 7,
+            "acht": 8, "neun": 9, "zehn": 10
         }
         for word, val in mapping.items():
             if word in text:
@@ -109,20 +103,35 @@ def add_entry(entry: Entry):
 
 
     # ---------------------------------------
-    # 3. Prüfen: Ist es eine Sprach-Kiste?
-    #    → "x Kisten gebracht", "Kiste gebracht", etc.
+    # 3. Erweiterte Sprach-Kiste-Logik
     # ---------------------------------------
-    is_sprach_kiste = (
-        "kiste" in raw_text
-        and ("gebracht" in raw_text or "spend" in raw_text or "mitgebracht" in raw_text)
-    )
+    def looks_like_kisten_entry(entry, raw_text):
+        t = raw_text
 
+        # Fall A: jede Form von "2 Kisten", "3 Kiste", auch mit Semikolon
+        if re.search(r"\b\d+\s*kiste", t):
+            return True
+
+        # Fall B: Wenn kosten_manuell "Kiste" enthält → immer Ausgleich
+        if entry.kosten_manuell and "kiste" in entry.kosten_manuell.lower():
+            return True
+
+        # Fall C: klassische Erkennung "Kiste gebracht"
+        if (
+            "kiste" in t
+            and ("gebracht" in t or "spend" in t or "mitgebracht" in t)
+        ):
+            return True
+
+        return False
+
+
+    is_sprach_kiste = looks_like_kisten_entry(entry, raw_text)
     sprach_kisten_count = detect_kisten_count(raw_text) if is_sprach_kiste else 1
 
 
     # ---------------------------------------
-    # 4. Fuzzy-Matching des Vergehens,
-    #    aber nur wenn es KEINE Sprach-Kiste ist
+    # 4. Fuzzy-Matching (nur wenn keine Sprach-Kiste)
     # ---------------------------------------
     def match_vergehen(v):
         match = difflib.get_close_matches(v, strafen_keys, n=1, cutoff=0.5)
@@ -130,7 +139,7 @@ def add_entry(entry: Entry):
 
 
     # ---------------------------------------
-    # 5. FALL 1: Sprach-Kiste (Kisten-Ausgleich)
+    # 5. FALL 1: Sprach-Kiste (Ausgleich)
     # ---------------------------------------
     if is_sprach_kiste:
 
@@ -145,8 +154,8 @@ def add_entry(entry: Entry):
                 entry.name,
                 final_vergehen,
                 "",               # kosten
-                kosten_manuell,   # → "Kiste"
-                kosten_final,     # → "Kiste"
+                kosten_manuell,   # "Kiste"
+                kosten_final,     # "Kiste"
                 entry.anmerkung or ""
             ]
             all_rows.append(row)
@@ -171,15 +180,14 @@ def add_entry(entry: Entry):
 
 
     # -------------------------------------------------------------------
-    # 6. FALL 2: Normales Vergehen (ggf. Strafen-Kiste aus Katalog)
+    # 6. FALL 2: Normales Vergehen
     # -------------------------------------------------------------------
 
-    # fuzzy vergehen
     final_vergehen = match_vergehen(entry.vergehen)
 
 
     # ---------------------------------------
-    # 6a. Kostenlogik für manuelle Eingabe
+    # 6a. Kostenlogik manuelle Eingabe
     # ---------------------------------------
     if entry.kosten_manuell:
         km = entry.kosten_manuell.strip()
@@ -196,24 +204,23 @@ def add_entry(entry: Entry):
 
             kosten = ""
 
-            # STRAFEN-KISTE (z. B. Bierpausch → Kiste)
+            # STRAFEN-KISTE aus Katalog
             if value.lower() == "kiste":
-                kosten_manuell = ""     # wichtig: NICHT "Kiste", sonst würde Server denken → Ausgleich
+                kosten_manuell = ""     # wichtig: nicht "Kiste"
                 kosten_final = "Kiste"  # offene Kiste
             else:
-                # normale Geldstrafe
                 kosten_manuell = ""
                 kosten_final = value
 
         else:
-            # unbekanntes Vergehen → 0 €
+            # unbekanntes Vergehen → 0€
             kosten = ""
             kosten_manuell = ""
             kosten_final = "0,00 €"
 
 
     # ---------------------------------------
-    # 7. Einzelnen Eintrag erzeugen (keine Loop)
+    # 7. Einzelnen Eintrag erzeugen
     # ---------------------------------------
     row = [
         entry.date,
@@ -224,6 +231,7 @@ def add_entry(entry: Entry):
         kosten_final,
         entry.anmerkung or ""
     ]
+
 
     # ---------------------------------------
     # 8. Schreiben ins Sheet
@@ -244,6 +252,7 @@ def add_entry(entry: Entry):
         "rows": [row],
         "info": "Normales Vergehen"
     }
+
 
 
 
