@@ -69,135 +69,164 @@ def add_entry(entry: Entry):
     strafen_keys = list(strafen.keys())
 
     import re
-    raw_text = (entry.vergehen + " " + (entry.kosten_manuell or "")).lower()
+    import difflib
+
+    # gesamter Text zur Analyse (für Sprachkisten)
+    raw_text = (
+        (entry.vergehen or "") + " "
+        + (entry.kosten_manuell or "") + " "
+        + (entry.anmerkung or "")
+    ).lower()
+
 
     # ---------------------------------------
-    # 2. KORREKTE KISTENANZAHL EXTRAHIEREN
-    #    (nur wenn explizit Kisten erwähnt werden)
+    # 2. Kistenzahl aus Sprachtext extrahieren
     # ---------------------------------------
     def detect_kisten_count(text):
-        # Nur Zahlen, die direkt vor "Kiste" stehen
-        match = re.search(r"(\d+)\s*(x)?\s*kiste", text)
-        if match:
-            return int(match.group(1))
+        # numerisch
+        nums = re.findall(r"\b\d+\b", text)
+        if nums:
+            return int(nums[0])
 
-        # Textvarianten erkennen
+        # textuelle Varianten
         mapping = {
-            "zwei kiste": 2,
-            "zwei kisten": 2,
-            "drei kiste": 3,
-            "drei kisten": 3,
-            "vier kiste": 4,
-            "vier kisten": 4,
-            "fünf kiste": 5,
-            "fünf kisten": 5
+            "eine": 1, "eins": 1,
+            "zwei": 2,
+            "drei": 3,
+            "vier": 4,
+            "fünf": 5,
+            "sechs": 6,
+            "sieben": 7,
+            "acht": 8,
+            "neun": 9,
+            "zehn": 10,
         }
-        for key, val in mapping.items():
-            if key in text:
+        for word, val in mapping.items():
+            if word in text:
                 return val
 
-        # Standard: 1 Kiste
         return 1
 
-    if "kiste" in raw_text:
-        kisten_count = detect_kisten_count(raw_text)
-    else:
-        kisten_count = 1
 
     # ---------------------------------------
-    # 3. Vergehen fuzzy matchen
+    # 3. Prüfen: Ist es eine Sprach-Kiste?
+    #    → "x Kisten gebracht", "Kiste gebracht", etc.
     # ---------------------------------------
-    import difflib
-    def match_vergehen(user_input):
-        if not user_input:
-            return user_input
+    is_sprach_kiste = (
+        "kiste" in raw_text
+        and ("gebracht" in raw_text or "spend" in raw_text or "mitgebracht" in raw_text)
+    )
 
-        match = difflib.get_close_matches(
-            user_input,
-            strafen_keys,
-            n=1,
-            cutoff=0.55
-        )
-        return match[0] if match else user_input
+    sprach_kisten_count = detect_kisten_count(raw_text) if is_sprach_kiste else 1
+
 
     # ---------------------------------------
-    # 4. Vergehen korrekt bestimmen
+    # 4. Fuzzy-Matching des Vergehens,
+    #    aber nur wenn es KEINE Sprach-Kiste ist
     # ---------------------------------------
+    def match_vergehen(v):
+        match = difflib.get_close_matches(v, strafen_keys, n=1, cutoff=0.5)
+        return match[0] if match else v
 
-    # Fall: Kisten werden gebracht oder bezahlt
-    if "kiste" in raw_text and ("bezahlt" in raw_text or "gebracht" in raw_text):
-        vergehen_clean = "Bezahlt"
-
-    # Normale Strafe → fuzzy match
-    else:
-        vergehen_clean = match_vergehen(entry.vergehen)
 
     # ---------------------------------------
-    # 5. Kostenlogik pro Eintrag
+    # 5. FALL 1: Sprach-Kiste (Kisten-Ausgleich)
     # ---------------------------------------
-    def calculate_single_entry():
+    if is_sprach_kiste:
 
-        # Kiste als Kosten (aber nur nicht automatisch bezahlt!)
-        if "kiste" in raw_text:
-            return {
-                "kosten": "",
-                "kosten_manuell": "Kiste",
-                "kosten_final": "Kiste"
-            }
+        final_vergehen = "Bezahlt"
+        kosten_manuell = "Kiste"
+        kosten_final = "Kiste"
 
-        # Manueller Wert
-        if entry.kosten_manuell:
-            man = entry.kosten_manuell.strip()
-            return {
-                "kosten": "",
-                "kosten_manuell": man,
-                "kosten_final": man
-            }
+        all_rows = []
+        for _ in range(sprach_kisten_count):
+            row = [
+                entry.date,
+                entry.name,
+                final_vergehen,
+                "",               # kosten
+                kosten_manuell,   # → "Kiste"
+                kosten_final,     # → "Kiste"
+                entry.anmerkung or ""
+            ]
+            all_rows.append(row)
 
-        # Mapping (Strafenliste)
-        if vergehen_clean in strafen:
-            value = strafen[vergehen_clean].strip()
-            # Textwert = Kiste, EURO oder normal
-            if value.lower() == "kiste":
-                return {
-                    "kosten": "",
-                    "kosten_manuell": "",
-                    "kosten_final": "Kiste"
-                }
-            return {
-                "kosten": "",
-                "kosten_manuell": "" if ("€" in value or "," in value) else value,
-                "kosten_final": value
-            }
+        # in Sheet schreiben
+        service = make_sheet_client()
+        sheets = service.spreadsheets()
 
-        # Nichts erkannt → 0 Euro
+        sheets.values().append(
+            spreadsheetId=SHEET_ID,
+            range="Einträge!A:G",
+            valueInputOption="USER_ENTERED",
+            body={"values": all_rows}
+        ).execute()
+
         return {
-            "kosten": "",
-            "kosten_manuell": "",
-            "kosten_final": "0,00 €"
+            "status": "ok",
+            "count": len(all_rows),
+            "rows": all_rows,
+            "info": "Sprach-Kiste erkannt (Ausgleich)"
         }
 
-    # ---------------------------------------
-    # 6. Schleife: mehrere Einträge (für mehrere Kisten)
-    # ---------------------------------------
-    all_rows = []
 
-    for _ in range(kisten_count):
-        calc = calculate_single_entry()
+    # -------------------------------------------------------------------
+    # 6. FALL 2: Normales Vergehen (ggf. Strafen-Kiste aus Katalog)
+    # -------------------------------------------------------------------
 
-        row = [
-            entry.date,
-            entry.name,
-            vergehen_clean,
-            calc["kosten"],
-            calc["kosten_manuell"],
-            calc["kosten_final"],
-            entry.anmerkung or ""
-        ]
-        all_rows.append(row)
+    # fuzzy vergehen
+    final_vergehen = match_vergehen(entry.vergehen)
+
 
     # ---------------------------------------
-    # 7. Schreiben in Google Sheet
+    # 6a. Kostenlogik für manuelle Eingabe
+    # ---------------------------------------
+    if entry.kosten_manuell:
+        km = entry.kosten_manuell.strip()
+        kosten = ""
+        kosten_manuell = km
+        kosten_final = km
+
+    else:
+        # ---------------------------------------
+        # 6b. Aus Strafenliste ziehen
+        # ---------------------------------------
+        if final_vergehen in strafen:
+            value = strafen[final_vergehen].strip()
+
+            kosten = ""
+
+            # STRAFEN-KISTE (z. B. Bierpausch → Kiste)
+            if value.lower() == "kiste":
+                kosten_manuell = ""     # wichtig: NICHT "Kiste", sonst würde Server denken → Ausgleich
+                kosten_final = "Kiste"  # offene Kiste
+            else:
+                # normale Geldstrafe
+                kosten_manuell = ""
+                kosten_final = value
+
+        else:
+            # unbekanntes Vergehen → 0 €
+            kosten = ""
+            kosten_manuell = ""
+            kosten_final = "0,00 €"
+
+
+    # ---------------------------------------
+    # 7. Einzelnen Eintrag erzeugen (keine Loop)
+    # ---------------------------------------
+    row = [
+        entry.date,
+        entry.name,
+        final_vergehen,
+        kosten,
+        kosten_manuell,
+        kosten_final,
+        entry.anmerkung or ""
+    ]
+
+    # ---------------------------------------
+    # 8. Schreiben ins Sheet
     # ---------------------------------------
     service = make_sheet_client()
     sheets = service.spreadsheets()
@@ -206,14 +235,17 @@ def add_entry(entry: Entry):
         spreadsheetId=SHEET_ID,
         range="Einträge!A:G",
         valueInputOption="USER_ENTERED",
-        body={"values": all_rows}
+        body={"values": [row]}
     ).execute()
 
     return {
         "status": "ok",
-        "count": len(all_rows),
-        "rows": all_rows
+        "count": 1,
+        "rows": [row],
+        "info": "Normales Vergehen"
     }
+
+
 
 
 
