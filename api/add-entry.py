@@ -31,7 +31,6 @@ def make_sheet_client():
 # POST /add-entry
 # -----------------------------
 class Entry(BaseModel):
-    date: str
     name: str
     vergehen: str
     kosten: str | None = ""
@@ -61,10 +60,11 @@ def load_strafen():
 
 @app.post("/add-entry")
 def add_entry(entry: Entry):
-
+    from datetime import datetime
+    today = datetime.now().strftime("%d.%m.%Y")
     import re
     import difflib
-
+    
     # ---------------------------------------
     # 1. Strafenliste laden
     # ---------------------------------------
@@ -150,7 +150,7 @@ def add_entry(entry: Entry):
         all_rows = []
         for _ in range(sprach_kisten_count):
             row = [
-                entry.date,
+                today,
                 entry.name,
                 final_vergehen,
                 "",               # kosten
@@ -223,7 +223,7 @@ def add_entry(entry: Entry):
     # 7. Einzelnen Eintrag erzeugen
     # ---------------------------------------
     row = [
-        entry.date,
+        today,
         entry.name,
         final_vergehen,
         kosten,
