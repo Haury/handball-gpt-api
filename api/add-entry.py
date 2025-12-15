@@ -60,18 +60,17 @@ def load_strafen():
 
 @app.post("/add-entry")
 def add_entry(entry: Entry):
-    from datetime import datetime
-    today = datetime.now().strftime("%d.%m.%Y")
+
     import re
     import difflib
-    
+
     # ---------------------------------------
     # 1. Strafenliste laden
     # ---------------------------------------
     strafen = load_strafen()
     strafen_keys = list(strafen.keys())
 
-    # gesamter Eingabetext für Sprach-Analysen
+    # gesamter Rohtext zur Analyse
     raw_text = (
         (entry.vergehen or "") + " "
         + (entry.kosten_manuell or "") + " "
@@ -80,58 +79,58 @@ def add_entry(entry: Entry):
 
 
     # ---------------------------------------
-    # 2. Kistenzahl aus Text extrahieren
+    # 2. Sprach-Kiste korrekt erkennen
+    #    (NUR "Kiste gebracht", "mitgebracht", "gespendet", etc.)
+    # ---------------------------------------
+    def looks_like_sprachkiste(text: str) -> bool:
+        text = text.lower()
+
+        # Muss das Wort Kiste enthalten
+        if "kiste" not in text:
+            return False
+
+        # Muss eines der Ausgleichs-Wörter enthalten
+        trigger_words = ["gebracht", "mitgebracht", "gespendet", "spendiert", "spende"]
+        return any(w in text for w in trigger_words)
+
+    is_sprach_kiste = looks_like_sprachkiste(raw_text)
+
+
+    # ---------------------------------------
+    # 3. Kistenzahl für Sprachkisten erkennen
     # ---------------------------------------
     def detect_kisten_count(text):
-        # numerisch wie "2 Kisten"
         nums = re.findall(r"\b\d+\b", text)
         if nums:
             return int(nums[0])
-
-        # textuelle Varianten
+        # fallback: wenn "zwei", "drei", ...
         mapping = {
             "eine": 1, "eins": 1,
-            "zwei": 2, "drei": 3, "vier": 4,
-            "fünf": 5, "sechs": 6, "sieben": 7,
-            "acht": 8, "neun": 9, "zehn": 10
+            "zwei": 2, "drei": 3,
+            "vier": 4, "fünf": 5,
+            "sechs": 6, "sieben": 7,
+            "acht": 8, "neun": 9,
+            "zehn": 10
         }
         for word, val in mapping.items():
             if word in text:
                 return val
-
         return 1
 
-
-    # ---------------------------------------
-    # 3. Erweiterte Sprach-Kiste-Logik
-    # ---------------------------------------
-    def looks_like_kisten_entry(entry, raw_text):
-        t = raw_text
-
-        # Fall A: jede Form von "2 Kisten", "3 Kiste", auch mit Semikolon
-        if re.search(r"\b\d+\s*kiste", t):
-            return True
-
-        # Fall B: Wenn kosten_manuell "Kiste" enthält → immer Ausgleich
-        if entry.kosten_manuell and "kiste" in entry.kosten_manuell.lower():
-            return True
-
-        # Fall C: klassische Erkennung "Kiste gebracht"
-        if (
-            "kiste" in t
-            and ("gebracht" in t or "spend" in t or "mitgebracht" in t)
-        ):
-            return True
-
-        return False
-
-
-    is_sprach_kiste = looks_like_kisten_entry(entry, raw_text)
     sprach_kisten_count = detect_kisten_count(raw_text) if is_sprach_kiste else 1
 
 
     # ---------------------------------------
-    # 4. Fuzzy-Matching (nur wenn keine Sprach-Kiste)
+    # 4. WICHTIGER FIX:
+    #    kosten_manuell = "Kiste" darf NICHT
+    #    Sprachkiste auslösen!
+    # ---------------------------------------
+    if entry.kosten_manuell and entry.kosten_manuell.lower().strip() == "kiste":
+        is_sprach_kiste = False
+
+
+    # ---------------------------------------
+    # 5. Fuzzy-Matching für reguläre Vergehen
     # ---------------------------------------
     def match_vergehen(v):
         match = difflib.get_close_matches(v, strafen_keys, n=1, cutoff=0.5)
@@ -139,7 +138,7 @@ def add_entry(entry: Entry):
 
 
     # ---------------------------------------
-    # 5. FALL 1: Sprach-Kiste (Ausgleich)
+    # 6. FALL 1: Sprach-Kiste (Ausgleich)
     # ---------------------------------------
     if is_sprach_kiste:
 
@@ -160,7 +159,6 @@ def add_entry(entry: Entry):
             ]
             all_rows.append(row)
 
-        # in Sheet schreiben
         service = make_sheet_client()
         sheets = service.spreadsheets()
 
@@ -175,19 +173,18 @@ def add_entry(entry: Entry):
             "status": "ok",
             "count": len(all_rows),
             "rows": all_rows,
-            "info": "Sprach-Kiste erkannt (Ausgleich)"
+            "info": "Sprach-Kiste erkannt"
         }
 
 
     # -------------------------------------------------------------------
-    # 6. FALL 2: Normales Vergehen
+    # 7. FALL 2: Normales Vergehen
     # -------------------------------------------------------------------
-
     final_vergehen = match_vergehen(entry.vergehen)
 
 
     # ---------------------------------------
-    # 6a. Kostenlogik manuelle Eingabe
+    # 7a. Kostenlogik, wenn kosten_manuell gesetzt ist
     # ---------------------------------------
     if entry.kosten_manuell:
         km = entry.kosten_manuell.strip()
@@ -197,30 +194,27 @@ def add_entry(entry: Entry):
 
     else:
         # ---------------------------------------
-        # 6b. Aus Strafenliste ziehen
+        # 7b. Kosten aus Strafenliste
         # ---------------------------------------
         if final_vergehen in strafen:
             value = strafen[final_vergehen].strip()
-
             kosten = ""
 
-            # STRAFEN-KISTE aus Katalog
+            # Strafen-Kiste: NICHT Ausgleich!
             if value.lower() == "kiste":
-                kosten_manuell = ""     # wichtig: nicht "Kiste"
-                kosten_final = "Kiste"  # offene Kiste
+                kosten_manuell = ""
+                kosten_final = "Kiste"   # offene Kiste
             else:
                 kosten_manuell = ""
                 kosten_final = value
-
         else:
-            # unbekanntes Vergehen → 0€
             kosten = ""
             kosten_manuell = ""
             kosten_final = "0,00 €"
 
 
     # ---------------------------------------
-    # 7. Einzelnen Eintrag erzeugen
+    # 8. EINZELNEN EINTRAG erzeugen
     # ---------------------------------------
     row = [
         today,
@@ -232,9 +226,8 @@ def add_entry(entry: Entry):
         entry.anmerkung or ""
     ]
 
-
     # ---------------------------------------
-    # 8. Schreiben ins Sheet
+    # 9. Schreiben
     # ---------------------------------------
     service = make_sheet_client()
     sheets = service.spreadsheets()
@@ -250,8 +243,9 @@ def add_entry(entry: Entry):
         "status": "ok",
         "count": 1,
         "rows": [row],
-        "info": "Normales Vergehen"
+        "info": "Normales Vergehen gespeichert"
     }
+
 
 
 
